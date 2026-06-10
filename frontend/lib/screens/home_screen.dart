@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 import '../models/application.dart';
+import '../models/resume.dart';
 import '../services/api_service.dart';
 import '../utils/constants.dart';
 import '../widgets/dashboard_card.dart';
 import '../widgets/application_list_card.dart';
 import '../widgets/delete_confirmation_dialog.dart';
+import '../widgets/error_state_widget.dart';
 import '../widgets/kanban_view.dart';
 import '../widgets/empty_state_widget.dart';
 import 'add_application_screen.dart';
 import 'application_details_screen.dart';
+import 'resume_library_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,6 +22,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   List<Application> _applications = [];
+  List<Resume> _resumes = [];
   bool _isLoading = true;
   String? _errorMessage;
   String _searchQuery = '';
@@ -26,12 +30,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String _sortBy = 'Latest Applied';
   bool _isKanbanView = false;
 
+  final Set<String> _pendingRequestIds = {};
   final TextEditingController _searchCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    _loadApplications();
+    _loadAll();
   }
 
   @override
@@ -40,27 +45,41 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  Future<void> _loadApplications() async {
+  // ---------------------------------------------------------------------------
+  // Data loading
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadAll() async {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
-
     try {
-      final applications = await ApiService.getApplications();
-      setState(() {
-        _applications = applications;
-      });
+      // Load both in parallel; resume failure is non-fatal
+      final results = await Future.wait([
+        ApiService.getApplications(),
+        ApiService.getResumes().catchError((_) => <Resume>[]),
+      ]);
+      if (mounted) {
+        setState(() {
+          _applications = results[0] as List<Application>;
+          _resumes = results[1] as List<Resume>;
+        });
+      }
     } catch (e) {
-      setState(() {
-        _errorMessage = 'Failed to load applications. ${e.toString()}';
-      });
+      debugPrint('HomeScreen load error: $e');
+      if (mounted) {
+        setState(() =>
+            _errorMessage = e.toString().replaceFirst('Exception: ', ''));
+      }
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) setState(() => _isLoading = false);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Filtering / sorting
+  // ---------------------------------------------------------------------------
 
   List<Application> _getFilteredAndSortedApplications() {
     var filtered = _applications.where((app) {
@@ -69,14 +88,12 @@ class _HomeScreenState extends State<HomeScreen> {
     }).toList();
 
     if (_searchQuery.isNotEmpty) {
-      final query = _searchQuery.toLowerCase();
+      final q = _searchQuery.toLowerCase();
       filtered = filtered
-          .where(
-            (app) =>
-                app.companyName.toLowerCase().contains(query) ||
-                app.role.toLowerCase().contains(query) ||
-                app.source.toLowerCase().contains(query),
-          )
+          .where((app) =>
+              app.companyName.toLowerCase().contains(q) ||
+              app.role.toLowerCase().contains(q) ||
+              app.source.toLowerCase().contains(q))
           .toList();
     }
 
@@ -94,52 +111,83 @@ class _HomeScreenState extends State<HomeScreen> {
         filtered.sort((a, b) => b.companyName.compareTo(a.companyName));
         break;
     }
-
     return filtered;
   }
 
+  /// Stats keyed by Kanban column label + Total + rates + pending counts.
   Map<String, dynamic> _calculateStats() {
-    final stats = <String, int>{
+    final colCounts = <String, int>{
       'Applied': 0,
       'OA': 0,
       'Interview': 0,
-      'Selected': 0,
+      'Offer': 0,
       'Rejected': 0,
     };
-    for (var app in _applications) {
-      if (stats.containsKey(app.status)) {
-        stats[app.status] = stats[app.status]! + 1;
-      }
-    }
-    stats['Total'] = _applications.length;
+    int pendingOA = 0;
+    int pendingInterview = 0;
 
-    // Calculate response rate: (OA + Interview + Selected) / Total
-    final responseCount =
-        (stats['OA'] ?? 0) +
-        (stats['Interview'] ?? 0) +
-        (stats['Selected'] ?? 0);
+    for (final app in _applications) {
+      final col = AppConstants.statusToKanbanColumn(app.status);
+      if (colCounts.containsKey(col)) {
+        colCounts[col] = colCounts[col]! + 1;
+      }
+      if (app.status == 'OA Completed') pendingOA++;
+      if (app.status == 'Interview Completed') pendingInterview++;
+    }
+    colCounts['Total'] = _applications.length;
+
+    // Response Rate: apps that reached OA or beyond (excluding Rejected)
+    final responded = (colCounts['OA'] ?? 0) +
+        (colCounts['Interview'] ?? 0) +
+        (colCounts['Offer'] ?? 0);
     final responseRate = _applications.isEmpty
         ? 0.0
-        : (responseCount / _applications.length) * 100;
-
-    // Calculate success rate: Selected / Total
+        : (responded / _applications.length) * 100;
     final successRate = _applications.isEmpty
         ? 0.0
-        : ((stats['Selected'] ?? 0) / _applications.length) * 100;
+        : ((colCounts['Offer'] ?? 0) / _applications.length) * 100;
 
-    return {...stats, 'responseRate': responseRate, 'successRate': successRate};
+    return {
+      ...colCounts,
+      'responseRate': responseRate,
+      'successRate': successRate,
+      'pendingOA': pendingOA,
+      'pendingInterview': pendingInterview,
+    };
   }
+
+  /// Returns the resume used most across all applications, or null.
+  ({Resume resume, int count})? _mostUsedResume() {
+    if (_resumes.isEmpty) return null;
+    final countMap = <String, int>{};
+    for (final app in _applications) {
+      if (app.resumeId != null) {
+        countMap[app.resumeId!] = (countMap[app.resumeId!] ?? 0) + 1;
+      }
+    }
+    if (countMap.isEmpty) return null;
+    final topId =
+        countMap.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
+    final topResume =
+        _resumes.where((r) => r.id == topId).firstOrNull;
+    if (topResume == null) return null;
+    return (resume: topResume, count: countMap[topId]!);
+  }
+
+  // ---------------------------------------------------------------------------
+  // CRUD handlers
+  // ---------------------------------------------------------------------------
 
   void _handleAddApplication() async {
     final result = await Navigator.push<Application>(
       context,
-      MaterialPageRoute(builder: (context) => const AddApplicationScreen()),
+      MaterialPageRoute(builder: (_) => const AddApplicationScreen()),
     );
-    if (result != null) {
-      setState(() {
-        _applications.add(result);
-      });
-      await _loadApplications();
+    if (result != null && mounted) {
+      setState(() => _applications.add(result));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Application created successfully')),
+      );
     }
   }
 
@@ -147,92 +195,136 @@ class _HomeScreenState extends State<HomeScreen> {
     final result = await Navigator.push<Application>(
       context,
       MaterialPageRoute(
-        builder: (context) => AddApplicationScreen(application: app),
-      ),
+          builder: (_) => AddApplicationScreen(application: app)),
     );
-    if (result != null) {
+    if (result != null && mounted) {
       setState(() {
-        final index = _applications.indexWhere((a) => a.id == app.id);
-        if (index != -1) {
-          _applications[index] = result;
-        }
+        final idx = _applications.indexWhere((a) => a.id == result.id);
+        if (idx != -1) _applications[idx] = result;
       });
-      await _loadApplications();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Application updated successfully')),
+      );
     }
   }
 
   void _handleDeleteApplication(Application app) {
-    ApiService.deleteApplication(app.id)
-        .then((_) async {
-          if (!mounted) return;
-          setState(() {
-            _applications.removeWhere((a) => a.id == app.id);
-          });
-          await _loadApplications();
-        })
-        .catchError((e) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Delete failed: ${e.toString()}')),
-            );
-          }
-        });
+    if (_pendingRequestIds.contains(app.id)) return;
+    showDialog(
+      context: context,
+      builder: (_) => DeleteConfirmationDialog(
+        companyName: app.companyName,
+        onConfirm: () => _performDelete(app),
+      ),
+    );
+  }
+
+  Future<void> _performDelete(Application app) async {
+    if (_pendingRequestIds.contains(app.id)) return;
+    _pendingRequestIds.add(app.id);
+    try {
+      await ApiService.deleteApplication(app.id);
+      if (mounted) {
+        setState(() => _applications.removeWhere((a) => a.id == app.id));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Application deleted successfully')),
+        );
+      }
+    } catch (e) {
+      debugPrint('HomeScreen delete error: $e');
+      if (mounted) {
+        final msg = e.toString().contains('connect')
+            ? 'Unable to connect to server'
+            : 'Failed to delete application';
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+      }
+    } finally {
+      _pendingRequestIds.remove(app.id);
+    }
   }
 
   void _handleStatusChanged(Application app, String newStatus) {
-    final updatedApp = app.copyWith(status: newStatus);
+    if (_pendingRequestIds.contains(app.id)) return;
+    _pendingRequestIds.add(app.id);
 
-    ApiService.updateApplication(updatedApp)
-        .then((updated) async {
-          if (!mounted) return;
-          setState(() {
-            final index = _applications.indexWhere((a) => a.id == app.id);
-            if (index != -1) {
-              _applications[index] = updated;
-            }
-          });
-          await _loadApplications();
-        })
-        .catchError((e) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Status update failed: ${e.toString()}')),
-            );
-          }
-        });
+    final updated = app.copyWith(status: newStatus);
+    ApiService.updateApplication(updated).then((saved) {
+      if (!mounted) return;
+      _pendingRequestIds.remove(app.id);
+      setState(() {
+        final idx = _applications.indexWhere((a) => a.id == app.id);
+        if (idx != -1) _applications[idx] = saved;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Application updated successfully')),
+      );
+    }).catchError((e) {
+      _pendingRequestIds.remove(app.id);
+      debugPrint('HomeScreen status update error: $e');
+      if (mounted) {
+        final msg = e.toString().contains('connect')
+            ? 'Unable to connect to server'
+            : 'Failed to update application';
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
+      }
+    });
   }
 
   void _handleShowDetails(Application app) {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => ApplicationDetailsScreen(
+        builder: (_) => ApplicationDetailsScreen(
           application: app,
           onEdit: (updated) {
-            setState(() {
-              final index = _applications.indexWhere((a) => a.id == app.id);
-              if (index != -1) {
-                _applications[index] = updated;
-              }
-            });
+            if (mounted) {
+              setState(() {
+                final idx =
+                    _applications.indexWhere((a) => a.id == updated.id);
+                if (idx != -1) _applications[idx] = updated;
+              });
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                    content: Text('Application updated successfully')),
+              );
+            }
           },
-          onDelete: (deleted) async {
-            setState(() {
-              _applications.removeWhere((a) => a.id == deleted.id);
-            });
-            await _loadApplications();
+          onDelete: (deleted) {
+            if (mounted) {
+              setState(() =>
+                  _applications.removeWhere((a) => a.id == deleted.id));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                    content: Text('Application deleted successfully')),
+              );
+            }
           },
         ),
       ),
     );
   }
 
+  void _handleOpenResumeLibrary() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const ResumeLibraryScreen()),
+    );
+    // Refresh resume list when returning from library
+    if (mounted) {
+      final resumes = await ApiService.getResumes()
+          .catchError((_) => <Resume>[]);
+      if (mounted) setState(() => _resumes = resumes);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Build
+  // ---------------------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
-    final stats = _calculateStats();
-    final displayedApps = _getFilteredAndSortedApplications();
-    final hasApplications = _applications.isNotEmpty;
-
     if (_isLoading) {
       return Scaffold(
         appBar: AppBar(title: const Text('Job Tracker'), elevation: 0),
@@ -247,25 +339,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_errorMessage != null) {
       return Scaffold(
         appBar: AppBar(title: const Text('Job Tracker'), elevation: 0),
-        body: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(AppSpacing.md),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  _errorMessage!,
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodyLarge,
-                ),
-                const SizedBox(height: AppSpacing.md),
-                FilledButton(
-                  onPressed: _loadApplications,
-                  child: const Text('Retry'),
-                ),
-              ],
-            ),
-          ),
+        body: ErrorStateWidget(
+          message: _errorMessage!,
+          onRetry: _loadAll,
         ),
         floatingActionButton: FloatingActionButton(
           onPressed: _handleAddApplication,
@@ -274,183 +350,166 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
 
+    final stats = _calculateStats();
+    final displayedApps = _getFilteredAndSortedApplications();
+    final hasApplications = _applications.isNotEmpty;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Job Tracker'), elevation: 0),
+      appBar: AppBar(
+        title: const Text('Job Tracker'),
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.picture_as_pdf),
+            tooltip: 'Resume Library',
+            onPressed: _handleOpenResumeLibrary,
+          ),
+        ],
+      ),
       body: hasApplications
           ? Column(
               children: [
-                // Dashboard Cards with Icons and Stats
+                // ── Stat cards row 1: counts ────────────────────────
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.all(AppSpacing.md),
                   child: Row(
                     children: [
+                      _buildStatCard('Total', stats['Total'] ?? 0,
+                          Colors.indigo, Icons.assignment),
                       _buildStatCard(
-                        'Total',
-                        stats['Total'] ?? 0,
-                        Colors.indigo,
-                        Icons.assignment,
-                      ),
+                          AppConstants.getStatusLabel('Applied'),
+                          stats['Applied'] ?? 0,
+                          Colors.blue,
+                          Icons.send),
+                      _buildStatCard(AppConstants.getStatusLabel('OA'),
+                          stats['OA'] ?? 0, Colors.orange, Icons.assignment),
                       _buildStatCard(
-                        AppConstants.getStatusLabel('Applied'),
-                        stats['Applied'] ?? 0,
-                        Colors.blue,
-                        Icons.send,
-                      ),
+                          AppConstants.getStatusLabel('Interview'),
+                          stats['Interview'] ?? 0,
+                          Colors.purple,
+                          Icons.forum),
                       _buildStatCard(
-                        AppConstants.getStatusLabel('OA'),
-                        stats['OA'] ?? 0,
-                        Colors.orange,
-                        Icons.assignment,
-                      ),
+                          AppConstants.getStatusLabel('Offer'),
+                          stats['Offer'] ?? 0,
+                          Colors.green,
+                          Icons.verified),
                       _buildStatCard(
-                        AppConstants.getStatusLabel('Interview'),
-                        stats['Interview'] ?? 0,
-                        Colors.purple,
-                        Icons.forum,
-                      ),
-                      _buildStatCard(
-                        AppConstants.getStatusLabel('Selected'),
-                        stats['Selected'] ?? 0,
-                        Colors.green,
-                        Icons.verified,
-                      ),
-                      _buildStatCard(
-                        AppConstants.getStatusLabel('Rejected'),
-                        stats['Rejected'] ?? 0,
-                        Colors.red,
-                        Icons.close,
-                      ),
+                          AppConstants.getStatusLabel('Rejected'),
+                          stats['Rejected'] ?? 0,
+                          Colors.red,
+                          Icons.cancel),
                     ],
                   ),
                 ),
 
-                // Response Rate and Success Rate Stats
+                // ── Stat cards row 2: rates + pending + resume summary ──
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.md,
-                  ),
+                      horizontal: AppSpacing.md),
                   child: Row(
                     children: [
-                      _buildPercentageCard(
-                        'Response Rate',
-                        stats['responseRate'] as double,
-                        Colors.blueAccent,
-                      ),
+                      _buildPercentageCard('Response Rate',
+                          stats['responseRate'] as double, Colors.blueAccent),
                       const SizedBox(width: AppSpacing.md),
-                      _buildPercentageCard(
-                        'Success Rate',
-                        stats['successRate'] as double,
-                        Colors.greenAccent,
+                      _buildPercentageCard('Success Rate',
+                          stats['successRate'] as double, Colors.greenAccent),
+                      const SizedBox(width: AppSpacing.md),
+                      _buildStatCard(
+                        'Pending OA\nResults',
+                        stats['pendingOA'] as int,
+                        Colors.deepOrange,
+                        Icons.hourglass_top,
                       ),
+                      _buildStatCard(
+                        'Pending Interview\nResults',
+                        stats['pendingInterview'] as int,
+                        Colors.deepPurple,
+                        Icons.hourglass_top,
+                      ),
+                      _buildResumeSummaryCard(),
                     ],
                   ),
                 ),
 
-                // Search Field
+                // ── Search ──────────────────────────────────────────
                 Padding(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.md,
-                    vertical: AppSpacing.sm,
-                  ),
+                      horizontal: AppSpacing.md, vertical: AppSpacing.sm),
                   child: TextField(
                     controller: _searchCtrl,
-                    onChanged: (value) {
-                      setState(() {
-                        _searchQuery = value;
-                      });
-                    },
+                    onChanged: (v) => setState(() => _searchQuery = v),
                     decoration: InputDecoration(
                       hintText: 'Search by company, role, or source',
                       prefixIcon: const Icon(Icons.search),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(AppBorderRadius.md),
+                        borderRadius:
+                            BorderRadius.circular(AppBorderRadius.md),
                       ),
                     ),
                   ),
                 ),
 
-                // Filter, Sort, View Toggle
+                // ── Filter / sort / view toggle ──────────────────────
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(
-                    horizontal: AppSpacing.md,
-                    vertical: AppSpacing.sm,
-                  ),
+                      horizontal: AppSpacing.md, vertical: AppSpacing.sm),
                   child: Row(
                     children: [
                       DropdownButton<String>(
                         value: _selectedFilter,
                         items: ['All', ...AppConstants.statuses]
-                            .map(
-                              (s) => DropdownMenuItem(value: s, child: Text(s)),
-                            )
+                            .map((s) =>
+                                DropdownMenuItem(value: s, child: Text(s)))
                             .toList(),
-                        onChanged: (value) {
-                          if (value != null) {
-                            setState(() {
-                              _selectedFilter = value;
-                            });
-                          }
+                        onChanged: (v) {
+                          if (v != null) setState(() => _selectedFilter = v);
                         },
                       ),
                       const SizedBox(width: AppSpacing.md),
                       DropdownButton<String>(
                         value: _sortBy,
-                        items:
-                            [
-                                  'Latest Applied',
-                                  'Oldest Applied',
-                                  'Company A-Z',
-                                  'Company Z-A',
-                                ]
-                                .map(
-                                  (s) => DropdownMenuItem(
-                                    value: s,
-                                    child: Text(s),
-                                  ),
-                                )
-                                .toList(),
-                        onChanged: (value) {
-                          if (value != null) {
-                            setState(() {
-                              _sortBy = value;
-                            });
-                          }
+                        items: [
+                          'Latest Applied',
+                          'Oldest Applied',
+                          'Company A-Z',
+                          'Company Z-A',
+                        ]
+                            .map((s) =>
+                                DropdownMenuItem(value: s, child: Text(s)))
+                            .toList(),
+                        onChanged: (v) {
+                          if (v != null) setState(() => _sortBy = v);
                         },
                       ),
                       const SizedBox(width: AppSpacing.md),
                       SegmentedButton<bool>(
-                        segments: const <ButtonSegment<bool>>[
-                          ButtonSegment<bool>(
-                            value: false,
-                            icon: Icon(Icons.list),
-                            label: Text('List'),
-                          ),
-                          ButtonSegment<bool>(
-                            value: true,
-                            icon: Icon(Icons.dashboard),
-                            label: Text('Kanban'),
-                          ),
+                        segments: const [
+                          ButtonSegment(
+                              value: false,
+                              icon: Icon(Icons.list),
+                              label: Text('List')),
+                          ButtonSegment(
+                              value: true,
+                              icon: Icon(Icons.dashboard),
+                              label: Text('Kanban')),
                         ],
-                        selected: <bool>{_isKanbanView},
-                        onSelectionChanged: (Set<bool> newSelection) {
-                          setState(() {
-                            _isKanbanView = newSelection.first;
-                          });
-                        },
+                        selected: {_isKanbanView},
+                        onSelectionChanged: (s) =>
+                            setState(() => _isKanbanView = s.first),
                       ),
                     ],
                   ),
                 ),
 
-                // Content Area (List or Kanban)
+                // ── Content area ────────────────────────────────────
                 Expanded(
                   child: displayedApps.isEmpty
                       ? Center(
                           child: Text(
-                            'No applications found',
+                            'No applications match your filters',
                             style: Theme.of(context).textTheme.bodyMedium,
                           ),
                         )
@@ -470,10 +529,11 @@ class _HomeScreenState extends State<HomeScreen> {
                             return ApplicationListCard(
                               application: app,
                               onDetails: () => _handleShowDetails(app),
-                              onStatusChanged: (newStatus) =>
-                                  _handleStatusChanged(app, newStatus),
+                              onStatusChanged: (s) =>
+                                  _handleStatusChanged(app, s),
                               onEdit: () => _handleEditApplication(app),
-                              onDelete: () => _handleDeleteApplication(app),
+                              onDelete: () =>
+                                  _handleDeleteApplication(app),
                             );
                           },
                         ),
@@ -488,38 +548,40 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildStatCard(String title, int count, Color color, IconData icon) {
+  // ---------------------------------------------------------------------------
+  // Card builders
+  // ---------------------------------------------------------------------------
+
+  Widget _buildStatCard(
+      String title, int count, Color color, IconData icon) {
     return Padding(
       padding: const EdgeInsets.only(right: AppSpacing.md),
       child: SizedBox(
         width: 110,
         height: 110,
-        child: DashboardCard(
-          title: title,
-          count: count,
-          color: color,
-          icon: icon,
-        ),
+        child: DashboardCard(title: title, count: count, color: color, icon: icon),
       ),
     );
   }
 
-  Widget _buildPercentageCard(String title, double percentage, Color color) {
+  Widget _buildPercentageCard(String title, double pct, Color color) {
     return SizedBox(
       width: 140,
       height: 110,
       child: Card(
         elevation: 2,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppBorderRadius.md),
-        ),
+            borderRadius: BorderRadius.circular(AppBorderRadius.md)),
         child: Container(
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(AppBorderRadius.md),
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
-              colors: [color.withOpacity(0.2), color.withOpacity(0.05)],
+              colors: [
+                color.withValues(alpha: 0.2),
+                color.withValues(alpha: 0.05),
+              ],
             ),
           ),
           child: Padding(
@@ -536,13 +598,94 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: AppSpacing.sm),
                 Text(
-                  '${percentage.toStringAsFixed(1)}%',
+                  '${pct.toStringAsFixed(1)}%',
                   style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                     color: color,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Compact resume summary dashboard card.
+  Widget _buildResumeSummaryCard() {
+    final theme = Theme.of(context);
+    final topEntry = _mostUsedResume();
+    const color = Colors.teal;
+
+    return SizedBox(
+      width: 180,
+      height: 110,
+      child: Card(
+        elevation: 2,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppBorderRadius.md)),
+        child: InkWell(
+          onTap: _handleOpenResumeLibrary,
+          borderRadius: BorderRadius.circular(AppBorderRadius.md),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(AppBorderRadius.md),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  color.withValues(alpha: 0.2),
+                  color.withValues(alpha: 0.05),
+                ],
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(AppSpacing.md),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.picture_as_pdf,
+                          color: color, size: 16),
+                      const SizedBox(width: AppSpacing.xs),
+                      Text(
+                        'Resume Library',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppSpacing.xs),
+                  Text(
+                    'Total: ${_resumes.length}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: color,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  if (topEntry != null) ...[
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      topEntry.resume.name,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurface,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      '${topEntry.count} app${topEntry.count == 1 ? '' : 's'}',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
         ),

@@ -1,23 +1,71 @@
 import 'package:flutter/material.dart';
 
 class AppConstants {
+  // ---------------------------------------------------------------------------
+  // Status definitions
+  // ---------------------------------------------------------------------------
+
+  /// All valid status values — used in the Add/Edit form dropdown.
   static const List<String> statuses = [
+    'Applied',
+    'OA Scheduled',
+    'OA Completed',
+    'Interview Scheduled',
+    'Interview Completed',
+    'Offer',
+    'Rejected',
+  ];
+
+  // ---------------------------------------------------------------------------
+  // Kanban column definitions
+  // ---------------------------------------------------------------------------
+
+  /// The 5 logical columns displayed in the Kanban board.
+  static const List<String> kanbanColumns = [
     'Applied',
     'OA',
     'Interview',
-    'Selected',
+    'Offer',
     'Rejected',
   ];
+
+  /// Maps a granular status value to its Kanban column label.
+  static String statusToKanbanColumn(String status) {
+    switch (status) {
+      case 'Applied':
+        return 'Applied';
+      case 'OA Scheduled':
+      case 'OA Completed':
+        return 'OA';
+      case 'Interview Scheduled':
+      case 'Interview Completed':
+        return 'Interview';
+      case 'Offer':
+        return 'Offer';
+      case 'Rejected':
+        return 'Rejected';
+      default:
+        return 'Applied';
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Colors
+  // ---------------------------------------------------------------------------
 
   static Color getStatusColor(String status) {
     switch (status) {
       case 'Applied':
         return Colors.blue;
-      case 'OA':
+      case 'OA Scheduled':
         return Colors.orange;
-      case 'Interview':
+      case 'OA Completed':
+        return Colors.deepOrange;
+      case 'Interview Scheduled':
         return Colors.purple;
-      case 'Selected':
+      case 'Interview Completed':
+        return Colors.deepPurple;
+      case 'Offer':
         return Colors.green;
       case 'Rejected':
         return Colors.red;
@@ -26,37 +74,111 @@ class AppConstants {
     }
   }
 
+  /// Colour for a Kanban column header, keyed by column name.
+  static Color getKanbanColumnColor(String column) {
+    switch (column) {
+      case 'Applied':
+        return Colors.blue;
+      case 'OA':
+        return Colors.orange;
+      case 'Interview':
+        return Colors.purple;
+      case 'Offer':
+        return Colors.green;
+      case 'Rejected':
+        return Colors.red;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Icons
+  // ---------------------------------------------------------------------------
+
   static IconData getStatusIcon(String status) {
     switch (status) {
       case 'Applied':
         return Icons.send;
-      case 'OA':
-        return Icons.assignment;
-      case 'Interview':
+      case 'OA Scheduled':
+        return Icons.schedule;
+      case 'OA Completed':
+        return Icons.assignment_turned_in;
+      case 'Interview Scheduled':
+        return Icons.event;
+      case 'Interview Completed':
         return Icons.forum;
-      case 'Selected':
+      case 'Offer':
         return Icons.verified;
       case 'Rejected':
-        return Icons.close;
+        return Icons.cancel;
       default:
         return Icons.help;
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Dashboard labels (for stat cards)
+  // ---------------------------------------------------------------------------
+
   static String getStatusLabel(String status) {
     switch (status) {
       case 'Applied':
-        return 'Applications Sent';
+        return 'Applications';
       case 'OA':
-        return 'Online Assessments';
+        return 'OA Stage';
       case 'Interview':
         return 'Interviews';
-      case 'Selected':
+      case 'Offer':
         return 'Offers';
       case 'Rejected':
-        return 'Rejections';
+        return 'Rejected';
       default:
-        return 'Unknown';
+        return status;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Next-action guidance
+  // ---------------------------------------------------------------------------
+
+  static String getNextAction(String status) {
+    switch (status) {
+      case 'Applied':
+        return 'Waiting for OA';
+      case 'OA Scheduled':
+        return 'Take OA';
+      case 'OA Completed':
+        return 'Waiting for OA Result';
+      case 'Interview Scheduled':
+        return 'Prepare for Interview';
+      case 'Interview Completed':
+        return 'Waiting for Interview Result';
+      case 'Offer':
+        return 'Decision Pending';
+      case 'Rejected':
+        return 'Application Closed';
+      default:
+        return '';
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Migration helper — maps old status values to new ones
+  // ---------------------------------------------------------------------------
+
+  /// Converts a legacy status string (pre-refactor) to the new value.
+  /// Returns the original string if no mapping is needed.
+  static String migrateStatus(String old) {
+    switch (old) {
+      case 'OA':
+        return 'OA Completed';
+      case 'Interview':
+        return 'Interview Completed';
+      case 'Selected':
+        return 'Offer';
+      default:
+        return old; // 'Applied' and 'Rejected' are unchanged
     }
   }
 }
