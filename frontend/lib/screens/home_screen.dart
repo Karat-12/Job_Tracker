@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/application.dart';
-import '../services/sample_data.dart';
+import '../services/api_service.dart';
 import '../utils/constants.dart';
 import '../widgets/dashboard_card.dart';
 import '../widgets/application_list_card.dart';
@@ -18,7 +18,9 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  late List<Application> _applications;
+  List<Application> _applications = [];
+  bool _isLoading = true;
+  String? _errorMessage;
   String _searchQuery = '';
   String _selectedFilter = 'All';
   String _sortBy = 'Latest Applied';
@@ -29,13 +31,35 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _applications = List.from(sampleApplications);
+    _loadApplications();
   }
 
   @override
   void dispose() {
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadApplications() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final applications = await ApiService.getApplications();
+      setState(() {
+        _applications = applications;
+      });
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Failed to load applications. ${e.toString()}';
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
 
   List<Application> _getFilteredAndSortedApplications() {
@@ -115,6 +139,7 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _applications.add(result);
       });
+      await _loadApplications();
     }
   }
 
@@ -132,22 +157,49 @@ class _HomeScreenState extends State<HomeScreen> {
           _applications[index] = result;
         }
       });
+      await _loadApplications();
     }
   }
 
   void _handleDeleteApplication(Application app) {
-    setState(() {
-      _applications.removeWhere((a) => a.id == app.id);
-    });
+    ApiService.deleteApplication(app.id)
+        .then((_) async {
+          if (!mounted) return;
+          setState(() {
+            _applications.removeWhere((a) => a.id == app.id);
+          });
+          await _loadApplications();
+        })
+        .catchError((e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Delete failed: ${e.toString()}')),
+            );
+          }
+        });
   }
 
   void _handleStatusChanged(Application app, String newStatus) {
-    setState(() {
-      final index = _applications.indexWhere((a) => a.id == app.id);
-      if (index != -1) {
-        _applications[index] = app.copyWith(status: newStatus);
-      }
-    });
+    final updatedApp = app.copyWith(status: newStatus);
+
+    ApiService.updateApplication(updatedApp)
+        .then((updated) async {
+          if (!mounted) return;
+          setState(() {
+            final index = _applications.indexWhere((a) => a.id == app.id);
+            if (index != -1) {
+              _applications[index] = updated;
+            }
+          });
+          await _loadApplications();
+        })
+        .catchError((e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Status update failed: ${e.toString()}')),
+            );
+          }
+        });
   }
 
   void _handleShowDetails(Application app) {
@@ -164,10 +216,11 @@ class _HomeScreenState extends State<HomeScreen> {
               }
             });
           },
-          onDelete: (deleted) {
+          onDelete: (deleted) async {
             setState(() {
               _applications.removeWhere((a) => a.id == deleted.id);
             });
+            await _loadApplications();
           },
         ),
       ),
@@ -179,6 +232,47 @@ class _HomeScreenState extends State<HomeScreen> {
     final stats = _calculateStats();
     final displayedApps = _getFilteredAndSortedApplications();
     final hasApplications = _applications.isNotEmpty;
+
+    if (_isLoading) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Job Tracker'), elevation: 0),
+        body: const Center(child: CircularProgressIndicator()),
+        floatingActionButton: FloatingActionButton(
+          onPressed: _handleAddApplication,
+          child: const Icon(Icons.add),
+        ),
+      );
+    }
+
+    if (_errorMessage != null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Job Tracker'), elevation: 0),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  _errorMessage!,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                FilledButton(
+                  onPressed: _loadApplications,
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        floatingActionButton: FloatingActionButton(
+          onPressed: _handleAddApplication,
+          child: const Icon(Icons.add),
+        ),
+      );
+    }
 
     return Scaffold(
       appBar: AppBar(title: const Text('Job Tracker'), elevation: 0),

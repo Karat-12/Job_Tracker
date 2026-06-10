@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/application.dart';
+import '../services/api_service.dart';
 import '../utils/constants.dart';
 import '../utils/date_utils.dart';
 import '../widgets/delete_confirmation_dialog.dart';
@@ -39,14 +40,26 @@ class ApplicationDetailsScreen extends StatelessWidget {
   }
 
   void _handleDelete(BuildContext context) {
+    final rootContext = context;
     showDialog(
       context: context,
       builder: (context) => DeleteConfirmationDialog(
         companyName: application.companyName,
-        onConfirm: () {
-          onDelete(application);
+        onConfirm: () async {
           Navigator.pop(context); // Close dialog
-          Navigator.pop(context); // Close details screen
+          try {
+            await ApiService.deleteApplication(application.id);
+            onDelete(application);
+            if (rootContext.mounted) {
+              Navigator.pop(rootContext); // Close details screen
+            }
+          } catch (e) {
+            if (rootContext.mounted) {
+              ScaffoldMessenger.of(rootContext).showSnackBar(
+                SnackBar(content: Text('Delete failed: ${e.toString()}')),
+              );
+            }
+          }
         },
       ),
     );
@@ -201,7 +214,8 @@ class ApplicationDetailsScreen extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.all(AppSpacing.md),
                   decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest.withOpacity(0.5),
+                    color: theme.colorScheme.surfaceContainerHighest
+                        .withOpacity(0.5),
                     borderRadius: BorderRadius.circular(AppBorderRadius.md),
                   ),
                   child: Text(

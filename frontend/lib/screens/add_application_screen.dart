@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/application.dart';
+import '../services/api_service.dart';
 import '../utils/constants.dart';
 
 class AddApplicationScreen extends StatefulWidget {
@@ -20,6 +21,7 @@ class _AddApplicationScreenState extends State<AddApplicationScreen> {
   late TextEditingController _dateCtrl;
   late TextEditingController _notesCtrl;
   late String _status;
+  bool _isSaving = false;
 
   @override
   void initState() {
@@ -49,7 +51,7 @@ class _AddApplicationScreenState extends State<AddApplicationScreen> {
     super.dispose();
   }
 
-  void _saveApplication() {
+  Future<void> _saveApplication() async {
     if (!_formKey.currentState!.validate()) return;
 
     final dateStr = _dateCtrl.text;
@@ -60,7 +62,7 @@ class _AddApplicationScreenState extends State<AddApplicationScreen> {
       int.parse(dateParts[2]),
     );
 
-    final newApp = Application(
+    final application = Application(
       id:
           widget.application?.id ??
           DateTime.now().millisecondsSinceEpoch.toString(),
@@ -73,7 +75,31 @@ class _AddApplicationScreenState extends State<AddApplicationScreen> {
       notes: _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
     );
 
-    Navigator.pop(context, newApp);
+    setState(() {
+      _isSaving = true;
+    });
+
+    try {
+      final savedApplication = widget.application == null
+          ? await ApiService.createApplication(application)
+          : await ApiService.updateApplication(application);
+
+      if (context.mounted) {
+        Navigator.pop(context, savedApplication);
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Save failed: ${e.toString()}')));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
   }
 
   @override
@@ -197,7 +223,7 @@ class _AddApplicationScreenState extends State<AddApplicationScreen> {
               ),
               const SizedBox(height: AppSpacing.xl),
               FilledButton(
-                onPressed: _saveApplication,
+                onPressed: _isSaving ? null : _saveApplication,
                 child: Text(isEditing ? 'Update' : 'Save'),
               ),
             ],

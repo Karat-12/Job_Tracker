@@ -19,7 +19,32 @@ class Application {
     this.notes,
   });
 
-  /// Create a copy with optional field overrides
+  factory Application.fromJson(Map<String, dynamic> json) {
+    return Application(
+      id: json['id'] ?? '',
+      companyName: json['companyName'] ?? '',
+      role: json['role'] ?? '',
+      source: json['source'] ?? '',
+      jobLink: json['jobLink'] ?? '',
+      dateApplied: DateTime.parse(json['dateApplied']),
+      status: json['status'] ?? '',
+      notes: json['notes'],
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'companyName': companyName,
+      'role': role,
+      'source': source,
+      'jobLink': jobLink,
+      'dateApplied': dateApplied.toIso8601String().split('T').first,
+      'status': status,
+      'notes': notes,
+    };
+  }
+
   Application copyWith({
     String? id,
     String? companyName,
