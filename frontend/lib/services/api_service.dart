@@ -4,10 +4,12 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/application.dart';
+import '../models/application_event.dart';
 import '../models/resume.dart';
 
 class ApiService {
-  static const String _baseUrl = 'http://localhost:8080';
+  static const String _baseUrl =
+    'https://job-tracker-api-vavk.onrender.com';
   static const String _appsUrl = '$_baseUrl/api/applications';
   static const String _resumesUrl = '$_baseUrl/api/resumes';
   static const Duration _timeout = Duration(seconds: 15);
@@ -228,4 +230,124 @@ class ApiService {
   /// Returns the full URL to stream the resume PDF from the backend.
   static String getResumeFileUrl(String resumeId) =>
       '$_resumesUrl/$resumeId/file';
+
+  // ===========================================================================
+  // Application Events
+  // ===========================================================================
+
+  static Future<List<ApplicationEvent>> getEvents(
+      String applicationId) async {
+    try {
+      final response = await http
+          .get(Uri.parse('$_appsUrl/$applicationId/events'))
+          .timeout(_timeout);
+      if (response.statusCode == 200) {
+        final List data = jsonDecode(response.body);
+        return data.map((j) => ApplicationEvent.fromJson(j)).toList();
+      }
+      debugPrint(
+          'GET events error: ${response.statusCode} ${response.body}');
+      throw Exception('Failed to load events');
+    } on SocketException catch (e) {
+      debugPrint('SocketException getEvents: $e');
+      throw Exception('Unable to connect to server');
+    } on TimeoutException catch (e) {
+      debugPrint('TimeoutException getEvents: $e');
+      throw Exception('Unable to connect to server');
+    } catch (e) {
+      debugPrint('Unknown error getEvents: $e');
+      throw Exception('Failed to load events');
+    }
+  }
+
+  /// [event] must have [eventType] and [eventDate] set.
+  /// [applicationId] is the parent application's ID.
+  static Future<ApplicationEvent> createEvent(
+      String applicationId, ApplicationEvent event) async {
+    try {
+      final payload = {
+        'eventType': event.eventType,
+        'eventDate': event.eventDate,
+        if (event.notes != null && event.notes!.isNotEmpty)
+          'notes': event.notes,
+      };
+      final response = await http
+          .post(
+            Uri.parse('$_appsUrl/$applicationId/events'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(payload),
+          )
+          .timeout(_timeout);
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return ApplicationEvent.fromJson(jsonDecode(response.body));
+      }
+      debugPrint(
+          'POST event error: ${response.statusCode} ${response.body}');
+      throw Exception('Failed to create event');
+    } on SocketException catch (e) {
+      debugPrint('SocketException createEvent: $e');
+      throw Exception('Unable to connect to server');
+    } on TimeoutException catch (e) {
+      debugPrint('TimeoutException createEvent: $e');
+      throw Exception('Unable to connect to server');
+    } catch (e) {
+      debugPrint('Unknown error createEvent: $e');
+      throw Exception('Failed to create event');
+    }
+  }
+
+  static Future<ApplicationEvent> updateEvent(
+      String eventId, ApplicationEvent event) async {
+    try {
+      final payload = {
+        'eventType': event.eventType,
+        'eventDate': event.eventDate,
+        if (event.notes != null && event.notes!.isNotEmpty)
+          'notes': event.notes,
+      };
+      final response = await http
+          .put(
+            Uri.parse('$_baseUrl/api/events/$eventId'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(payload),
+          )
+          .timeout(_timeout);
+      if (response.statusCode == 200) {
+        return ApplicationEvent.fromJson(jsonDecode(response.body));
+      }
+      debugPrint(
+          'PUT event error: ${response.statusCode} ${response.body}');
+      throw Exception('Failed to update event');
+    } on SocketException catch (e) {
+      debugPrint('SocketException updateEvent: $e');
+      throw Exception('Unable to connect to server');
+    } on TimeoutException catch (e) {
+      debugPrint('TimeoutException updateEvent: $e');
+      throw Exception('Unable to connect to server');
+    } catch (e) {
+      debugPrint('Unknown error updateEvent: $e');
+      throw Exception('Failed to update event');
+    }
+  }
+
+  static Future<void> deleteEvent(String eventId) async {
+    try {
+      final response = await http
+          .delete(Uri.parse('$_baseUrl/api/events/$eventId'))
+          .timeout(_timeout);
+      if (response.statusCode == 200 || response.statusCode == 204) return;
+      debugPrint(
+          'DELETE event error: ${response.statusCode} ${response.body}');
+      throw Exception('Failed to delete event');
+    } on SocketException catch (e) {
+      debugPrint('SocketException deleteEvent: $e');
+      throw Exception('Unable to connect to server');
+    } on TimeoutException catch (e) {
+      debugPrint('TimeoutException deleteEvent: $e');
+      throw Exception('Unable to connect to server');
+    } catch (e) {
+      debugPrint('Unknown error deleteEvent: $e');
+      throw Exception('Failed to delete event');
+    }
+  }
 }

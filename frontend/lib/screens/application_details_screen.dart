@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/application.dart';
+import '../models/application_event.dart';
 import '../models/resume.dart';
 import '../services/api_service.dart';
 import '../utils/constants.dart';
 import '../utils/date_utils.dart';
+import '../widgets/add_event_dialog.dart';
 import '../widgets/application_timeline.dart';
 import '../widgets/delete_confirmation_dialog.dart';
 import 'add_application_screen.dart';
@@ -34,11 +36,17 @@ class _ApplicationDetailsScreenState extends State<ApplicationDetailsScreen> {
   bool _loadingResume = false;
   bool _openingResume = false;
 
+  // ── Application Events state ──────────────────────────────────────────────
+  List<ApplicationEvent> _events = [];
+  bool _loadingEvents = true;
+  String? _eventsError;
+
   @override
   void initState() {
     super.initState();
     _application = widget.application;
     if (_application.resumeId != null) _loadLinkedResume();
+    _loadEvents();
   }
 
   Future<void> _loadLinkedResume() async {
@@ -59,6 +67,130 @@ class _ApplicationDetailsScreenState extends State<ApplicationDetailsScreen> {
     } catch (_) {
       if (mounted) setState(() => _loadingResume = false);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Application Events
+  // ---------------------------------------------------------------------------
+
+  Future<void> _loadEvents() async {
+    setState(() {
+      _loadingEvents = true;
+      _eventsError = null;
+    });
+    try {
+      final events = await ApiService.getEvents(_application.id);
+      if (mounted) setState(() => _events = events);
+    } catch (e) {
+      if (mounted) {
+        setState(() =>
+            _eventsError = e.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) setState(() => _loadingEvents = false);
+    }
+  }
+
+  void _handleAddEvent() {
+    showDialog(
+      context: context,
+      builder: (_) => AddEventDialog(
+        onSave: (eventType, eventDate, notes) async {
+          final created = await ApiService.createEvent(
+            _application.id,
+            ApplicationEvent(
+              id: '',
+              applicationId: _application.id,
+              eventType: eventType,
+              eventDate: eventDate,
+              notes: notes,
+              createdAt: '',
+            ),
+          );
+          if (mounted) {
+            setState(() => _events.add(created));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Event added')),
+            );
+          }
+        },
+      ),
+    );
+  }
+
+  void _handleEditEvent(ApplicationEvent event) {
+    showDialog(
+      context: context,
+      builder: (_) => AddEventDialog(
+        event: event,
+        onSave: (eventType, eventDate, notes) async {
+          final updated = await ApiService.updateEvent(
+            event.id,
+            event.copyWith(
+              eventType: eventType,
+              eventDate: eventDate,
+              notes: notes,
+            ),
+          );
+          if (mounted) {
+            setState(() {
+              final idx = _events.indexWhere((e) => e.id == event.id);
+              if (idx != -1) _events[idx] = updated;
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Event updated')),
+            );
+          }
+        },
+      ),
+    );
+  }
+
+  void _handleDeleteEvent(ApplicationEvent event) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Event'),
+        content: Text(
+            'Delete the "${event.eventType}" event on ${event.eventDate}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.tonal(
+            onPressed: () async {
+              Navigator.pop(context);
+              try {
+                await ApiService.deleteEvent(event.id);
+                if (mounted) {
+                  setState(
+                      () => _events.removeWhere((e) => e.id == event.id));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Event deleted')),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  final msg = e.toString().contains('connect')
+                      ? 'Unable to connect to server'
+                      : 'Failed to delete event';
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(SnackBar(content: Text(msg)));
+                }
+              }
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor:
+                  Theme.of(context).colorScheme.errorContainer,
+              foregroundColor:
+                  Theme.of(context).colorScheme.onErrorContainer,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _launchUrl(String url) async {
@@ -256,6 +388,10 @@ class _ApplicationDetailsScreenState extends State<ApplicationDetailsScreen> {
               ),
               const SizedBox(height: AppSpacing.lg),
 
+              // ── Application Events ────────────────────────────────────
+              _buildEventsSection(theme),
+              const SizedBox(height: AppSpacing.lg),
+
               // ── Details rows ──────────────────────────────────────────
               _buildDetailRow('Source', _application.source, Icons.source),
               _buildDetailRow(
@@ -379,6 +515,165 @@ class _ApplicationDetailsScreenState extends State<ApplicationDetailsScreen> {
   // ---------------------------------------------------------------------------
   // Helper widgets
   // ---------------------------------------------------------------------------
+
+  Widget _buildEventsSection(ThemeData theme) {
+    return Card(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppBorderRadius.md),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.lg),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header row
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Events',
+                  style: theme.textTheme.titleMedium
+                      ?.copyWith(fontWeight: FontWeight.bold),
+                ),
+                TextButton.icon(
+                  onPressed: _handleAddEvent,
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('Add Event'),
+                ),
+              ],
+            ),
+            const SizedBox(height: AppSpacing.sm),
+
+            // Body
+            if (_loadingEvents)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.symmetric(vertical: AppSpacing.lg),
+                  child: CircularProgressIndicator(),
+                ),
+              )
+            else if (_eventsError != null)
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                child: Row(
+                  children: [
+                    Icon(Icons.error_outline,
+                        color: theme.colorScheme.error, size: 18),
+                    const SizedBox(width: AppSpacing.sm),
+                    Expanded(
+                      child: Text(
+                        _eventsError!,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _loadEvents,
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              )
+            else if (_events.isEmpty)
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+                child: Text(
+                  'No events yet. Tap "Add Event" to log a recruitment milestone.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              )
+            else
+              ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: _events.length,
+                separatorBuilder: (_, __) =>
+                    const Divider(height: AppSpacing.md),
+                itemBuilder: (_, i) => _buildEventRow(_events[i], theme),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEventRow(ApplicationEvent event, ThemeData theme) {
+    final color = AppConstants.getEventTypeColor(event.eventType);
+    final icon = AppConstants.getEventTypeIcon(event.eventType);
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Coloured icon
+        Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, size: 16, color: color),
+        ),
+        const SizedBox(width: AppSpacing.sm),
+
+        // Type + date + notes
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                event.eventType,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              Text(
+                event.eventDate,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              if (event.notes != null && event.notes!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: AppSpacing.xs),
+                  child: Text(
+                    event.notes!,
+                    style: theme.textTheme.bodySmall,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+          ),
+        ),
+
+        // Edit / Delete actions
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.edit, size: 18),
+              tooltip: 'Edit',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _handleEditEvent(event),
+            ),
+            IconButton(
+              icon: Icon(Icons.delete,
+                  size: 18, color: theme.colorScheme.error),
+              tooltip: 'Delete',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _handleDeleteEvent(event),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 
   Widget _buildResumeSection(ThemeData theme) {
     if (_loadingResume) {

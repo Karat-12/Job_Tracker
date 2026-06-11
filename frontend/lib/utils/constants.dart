@@ -164,6 +164,83 @@ class AppConstants {
   }
 
   // ---------------------------------------------------------------------------
+  // ApplicationEvent types
+  // ---------------------------------------------------------------------------
+
+  /// Ordered list of all valid event types for ApplicationEvent.
+  static const List<String> eventTypes = [
+    'Applied',
+    'OA Scheduled',
+    'OA Completed',
+    'Interview Scheduled',
+    'Interview Completed',
+    'HR Round Scheduled',
+    'HR Round Completed',
+    'Offer Received',
+    'Offer Accepted',
+    'Rejected',
+    'Joined',
+  ];
+
+  static IconData getEventTypeIcon(String eventType) {
+    switch (eventType) {
+      case 'Applied':
+        return Icons.send;
+      case 'OA Scheduled':
+        return Icons.schedule;
+      case 'OA Completed':
+        return Icons.assignment_turned_in;
+      case 'Interview Scheduled':
+        return Icons.event;
+      case 'Interview Completed':
+        return Icons.forum;
+      case 'HR Round Scheduled':
+        return Icons.groups;
+      case 'HR Round Completed':
+        return Icons.groups_3;
+      case 'Offer Received':
+        return Icons.card_giftcard;
+      case 'Offer Accepted':
+        return Icons.check_circle;
+      case 'Rejected':
+        return Icons.cancel;
+      case 'Joined':
+        return Icons.work;
+      default:
+        return Icons.circle_outlined;
+    }
+  }
+
+  static Color getEventTypeColor(String eventType) {
+    switch (eventType) {
+      case 'Applied':
+        return Colors.blue;
+      case 'OA Scheduled':
+        return Colors.orange;
+      case 'OA Completed':
+        return Colors.deepOrange;
+      case 'Interview Scheduled':
+        return Colors.purple;
+      case 'Interview Completed':
+        return Colors.deepPurple;
+      case 'HR Round Scheduled':
+        return Colors.cyan;
+      case 'HR Round Completed':
+        return Colors.teal;
+      case 'Offer Received':
+        return Colors.lightGreen;
+      case 'Offer Accepted':
+        return Colors.green;
+      case 'Rejected':
+        return Colors.red;
+      case 'Joined':
+        return Colors.indigo;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Migration helper — maps old status values to new ones
   // ---------------------------------------------------------------------------
 
